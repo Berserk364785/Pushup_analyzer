@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Анализатор отжиманий</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: Arial, sans-serif; 
+            background: #1a1a2e;
+            color: white;
+            text-align: center;
+            padding: 20px;
+        }
+        .container { max-width: 100%; }
+        h1 { margin: 20px 0; color: #4ecca3; }
+        .video-container {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            margin: 0 auto;
+        }
+        #video, #canvas {
+            width: 100%;
+            border-radius: 15px;
+            background: #000;
+        }
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        .stats {
+            background: rgba(255,255,255,0.1);
+            padding: 20px;
+            border-radius: 15px;
+            margin: 20px 0;
+            backdrop-filter: blur(10px);
+        }
+        .counter {
+            font-size: 4em;
+            font-weight: bold;
+            color: #4ecca3;
+            margin: 10px 0;
+        }
+        .feedback {
+            font-size: 1.3em;
+            color: #f8b500;
+            margin: 15px 0;
+            min-height: 60px;
+        }
+        button {
+            background: #4ecca3;
+            color: white;
+            border: none;
+            padding: 15px 25px;
+            border-radius: 25px;
+            font-size: 1.1em;
+            margin: 10px;
+            cursor: pointer;
+            width: 200px;
+        }
+        .error {
+            background: #ff6b6b;
+            color: white;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 15px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏋️ Анализатор отжиманий</h1>
+        
+        <div class="video-container">
+            <video id="video" playsinline></video>
+            <canvas id="canvas"></canvas>
+        </div>
+
+        <div class="stats">
+            <div class="counter" id="counter">0</div>
+            <div>отжиманий</div>
+        </div>
+
+        <div class="feedback" id="feedback">Нажмите "Старт" для начала</div>
+
+        <div>
+            <button onclick="startCamera()">🎥 Старт</button>
+            <button onclick="resetCounter()">🔄 Сброс</button>
+        </div>
+
+        <div class="stats">
+            <div>Угол: <span id="angle">0</span>°</div>
+            <div>Положение: <span id="state">-</span></div>
+        </div>
+    </div>
+
+    <script>
+        let repCount = 0;
+        let isDown = false;
+        let pose = null;
+        let camera = null;
+
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const counter = document.getElementById('counter');
+        const feedback = document.getElementById('feedback');
+        const angleElement = document.getElementById('angle');
+        const stateElement = document.getElementById('state');
+
+        // Функция для расчета угла
+        function calculateAngle(a, b, c) {
+            const radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+            let angle = Math.abs(radians * 180 / Math.PI);
+            return angle > 180 ? 360 - angle : angle;
+        }
+
+        // Обработка результатов
+        function onResults(results) {
+            if (!results.poseLandmarks) {
+                feedback.textContent = "Встаньте в кадр";
+                return;
+            }
+
+            ctx.save();
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+
+            // Рисуем скелет
+            drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, {
+                color: '#00FF00', lineWidth: 4
+            });
+            drawLandmarks(ctx, results.poseLandmarks, {
+                color: '#FF0000', lineWidth: 2
+            });
+
+            const landmarks = results.poseLandmarks;
+            
+            // Анализируем левый локоть
+            const leftShoulder = landmarks[11];
+            const leftElbow = landmarks[13];
+            const leftWrist = landmarks[15];
+            
+            const angle = calculateAngle(leftShoulder, leftElbow, leftWrist);
+            angleElement.textContent = Math.round(angle);
+
+            // Счетчик отжиманий
+            if (angle < 80 && !isDown) {
+                isDown = true;
+                stateElement.textContent = "НИЗ";
+                stateElement.style.color = "#ff6b6b";
+            } else if (angle > 160 && isDown) {
+                repCount++;
+                isDown = false;
+                counter.textContent = repCount;
+                stateElement.textContent = "ВЕРХ";
+                stateElement.style.color = "#4ecca3";
+                feedback.textContent = `Отжимание #${repCount}! 👍`;
+            }
+
+            ctx.restore();
+        }
+
+        // Запуск камеры
+        async function startCamera() {
+            try {
+                feedback.textContent = "Запуск камеры...";
+                
+                // Запрашиваем разрешение на камеру
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'environment', width: 640, height: 480 } 
+                });
+                
+                video.srcObject = stream;
+                
+                // Ждем загрузки видео
+                video.onloadedmetadata = async () => {
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    
+                    // Инициализируем MediaPipe Pose
+                    pose = new Pose({
+                        locateFile: (file) => {
+                            return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+                        }
+                    });
+                    
+                    pose.setOptions({
+                        modelComplexity: 1,
+                        smoothLandmarks: true,
+                        minDetectionConfidence: 0.5,
+                        minTrackingConfidence: 0.5
+                    });
+                    
+                    pose.onResults(onResults);
+                    
+                    // Запускаем обработку кадров
+                    async function processFrame() {
+                        if (!pose) return;
+                        
+                        await pose.send({image: video});
+                        requestAnimationFrame(processFrame);
+                    }
+                    
+                    await video.play();
+                    processFrame();
+                    feedback.textContent = "Камера запущена! Начинайте отжимания!";
+                };
+                
+            } catch (error) {
+                console.error('Ошибка:', error);
+                feedback.textContent = "Ошибка доступа к камере. Проверьте разрешения.";
+            }
+        }
+
+        function resetCounter() {
+            repCount = 0;
+            counter.textContent = "0";
+            feedback.textContent = "Счетчик сброшен!";
+            isDown = false;
+            stateElement.textContent = "-";
+        }
+    </script>
+</body>
+</html>
